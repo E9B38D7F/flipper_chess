@@ -14,3 +14,8 @@ __REVIEWING GAMES__
 * Edit game_viewer.py so "filename" is the name of the game csv you want to review.
 * Run game_viewer.py.
 * Buttons do as follows: right arrow and space move forward a move, left arrow goes back a move, up arrow goes to the start of the game, and down arrow to the end. Pressing "s" swaps the players around, so you can switch between black's and white's perspectives. And "q" quits the game. 
+
+__NEW FEATURES__
+* Can play a CPP bot, that is actually pretty smart.
+* Infrastructure for having bots play thousands of games against each other (used for not-yet-implemented project of having neural nets play the game).
+* Game eval visualiser with worm.ipynb, which can show the most influential moves in a game. 
