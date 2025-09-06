@@ -3,14 +3,14 @@ import numpy as np
 import pandas as pd
 import time
 from board import Board
-from players import TargetedTree, HumanPlayer
+from players import BozoBot, HumanPlayer, CppBot
 from evals import (
     generate_complex_eval_dict,
     get_board_score_with_position,
     get_board_score_with_mobility
 )
 
-SUCCESS_PROB = 0.5
+SUCCESS_PROB = 0.5 # VARIANT: randomly chosen at start of game
 HEIGHT = 800 # in pixels
 WIDTH = int(HEIGHT * 1.5)
 DIMENSION = 8
@@ -73,7 +73,6 @@ def get_highlights(board, square, colour, poss_moves):
     if piece[0] == "K": # Handle castling separately
         back_rank = "1" if colour == "W" else "8"
         if "O-O" in poss_moves:
-            print("Kingside castle in htere!")
             target_tiles.append(f"G{back_rank}")
         if "O-O-O" in poss_moves:
             target_tiles.append(f"C{back_rank}")
@@ -184,9 +183,8 @@ def turn_clicks_to_move(player_clicks, board, poss_moves, screen):
     return proposed_move
 
 
-def draw_game_state(
-    screen, board, tape, highlights=[], colour="W", tape_height=6
-):
+def draw_game_state(screen, board, tape, highlights=[], colour="W", th=6):
+    """ th is tape_height """
     def draw_squares(screen, colour):
         # The background, i.e., the checkerboard
         colours = [LIGHT, DARK]
@@ -225,10 +223,10 @@ def draw_game_state(
             draw_text(screen, row["move"], colour, size=18, cen=(ac, dn))
         p.draw.rect(screen, p.Color("#6E3E02"), get_rect(0, 8, 8, 12))
         tape_df = pd.DataFrame(tape, columns=["colour", "success", "move"])
-        printable = tape_df.tail(int(tape_height / ROW_HEIGHT))
+        printable = tape_df.tail(int(th / ROW_HEIGHT))
         for index, row in printable.reset_index().iterrows():
             write_tape_row(index, row)
-        if tape_height > 6: # i.e., no space for buttons
+        if th > 6: # i.e., no space for buttons
             return
         p.draw.rect(screen, LIGHT, get_rect(6.1, 6.9, 8.1, 11.9))
         p.draw.rect(screen, DARK, get_rect(6.2, 6.8, 8.2, 11.8))
@@ -265,10 +263,8 @@ def choose_players(screen):
                         if abs(location[1] - 4 * SQ_SIZE) < SQ_SIZE / 2:
                             return HumanPlayer(colour[0])
                         elif abs(location[1] - 5.5 * SQ_SIZE) < SQ_SIZE / 2:
-                            return TargetedTree(
-                                colour[0], select_time(screen), 0.25,
-                                get_board_score_with_mobility, SUCCESS_PROB
-                            )
+                            # return BozoBot(colour[0])
+                            return CppBot(colour[0], 1000, 4000000)
     def select_time(screen):
         tt = 10
         while True:
@@ -347,6 +343,25 @@ def save_tape_to_file():
     tape_df.to_csv(filename, index=False)
 
 
+def load_position(board, data_list):
+    deencoder = {
+        6: "KW", 5: "QW", 4: "RW", 3: "BW", 2: "NW", 1: "PW",
+        -6: "KB", -5: "QB", -4: "RB", -3: "BB", -2: "NB", -1: "PB",
+        0: ""
+    }
+    tiles = np.vectorize(deencoder.__getitem__)(np.array(data_list[:64]))
+    board.tiles = tiles.reshape(8, 8)
+    board.castle_list = []
+    for i, poss in zip(range(64, 68), ["WK", "WQ", "BK", "BQ"]):
+        if data_list[i] == 1:
+            board.castle_list.append(poss)
+    if data_list[68] == -1:
+        board.epsq = "none"
+    else:
+        board.epsq = "ABCDEFGH"[data_list[68] % 8] + str(data_list[68] // 8)
+    board.current_player = "W" if data_list[69] == 0 else "B"
+
+
 def main():
     p.init()
     screen = p.display.set_mode((WIDTH, HEIGHT))
@@ -361,6 +376,7 @@ def main():
     draw_game_state(screen, board, TAPE)
 
     while running: # ONE loop of this loop is getting a move
+        new_board = True
         current_player = board.players[board.current_player]
         poss_moves = board.get_all_possible_moves(board.current_player)
         imp_moves = []
@@ -382,11 +398,11 @@ def main():
                             if col > 7 and row == 1:
                                 save_tape_to_file()
                                 draw_text(screen, "Saved!", "Green", size=36)
-                                time.sleep(1)
+                                time.sleep(0.25)
                                 return
                             elif col > 7 and row == 0:
                                 draw_text(screen, "Quitting", "Green", size=36)
-                                time.sleep(1)
+                                time.sleep(0.25)
                                 return
                             if current_player.colour == "B":
                                 col = 7 - col
@@ -416,8 +432,9 @@ def main():
                 player_clicks = []
             else: # If automated player
                 board.send_info_to_player(
-                    current_player, poss_moves, imp_moves
+                    current_player, poss_moves, imp_moves, new_board=new_board
                 )
+                new_board = False
                 proposed_move = board.get_move_from_player(current_player)
             # 2. Check it is possible
             if proposed_move not in poss_moves:

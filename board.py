@@ -1,4 +1,9 @@
 import numpy as np
+import pandas as pd
+
+
+# NOTE: board format goes (rank, file)
+# so [0, 4] is E1, i.e., white king's starting square
 
 
 # Various constants to import
@@ -30,7 +35,7 @@ class Board():
             ["PB"] * 8,
             [f"{piece}B" for piece in "RNBQKBNR"]
         ])
-        self.last_move = "none"
+        self.epsq = "none" # is en passant (target) square, stored as str: "A3"
         self.castle_list = ["WK", "WQ", "BK", "BQ"] # i.e., w/b king/queenside
         self.players = {"W": white, "B": black}
         self.current_player = "W" # i.e., key of whoever's move it is
@@ -39,7 +44,7 @@ class Board():
     def copy(self):
         copy = Board(self.players["W"], self.players["B"])
         copy.tiles = self.tiles.copy()
-        copy.last_move = "".join([i for i in self.last_move]) # i.e., copy str
+        copy.epsq = self.epsq + ""
         copy.castle_list = self.castle_list.copy()
         copy.current_player = other_player[self.current_player]
         return copy
@@ -72,7 +77,6 @@ class Board():
             BC1xB2 if bishop on C1 takes on B2
             PD7D8=Q if pawn on D7 promotes to queen by moving to D8
             O-O if kingside castle, O-O-O if queenside
-        last_move is retained to check for en passant
         """
         def get_tile_moves(self, row, col, colour):
             """
@@ -231,7 +235,8 @@ class Board():
                 assert False
 
         if len(self.outcome) > 0: # i.e., game over
-            return []
+            # return []
+            pass # hack to allow game to continue past end
         poss_moves = []
         # 1. Castling
         back = 0 if colour == "W" else 7
@@ -249,20 +254,17 @@ class Board():
         ):
             poss_moves.append("O-O")
         # 2. En passant
-        if "x" not in self.last_move:
-            if (
-                self.last_move[0] == "P"
-                and abs(int(self.last_move[2]) - int(self.last_move[4])) == 2
-            ):
-                prow, pcol = bta(self.last_move[3:5])
-                for offset in [-1, 1]:
-                    if pcol + offset < 0 or pcol + offset > 7:
-                        continue
-                    if self.tiles[prow, pcol + offset] == "P" + colour:
-                        end_row = 5 if colour == "W" else 2
-                        poss_moves.append(
-                            f"P{atb(prow, pcol + offset)}x{atb(end_row, pcol)}"
-                        )
+        if self.epsq != "none":
+            ts_rank, ts_file = bta(self.epsq)
+            start_rank = 3 if ts_rank == 2 else 4 # where taker starts from
+            for offset in [-1, 1]: # i.e., adjacent columns
+                if ts_file + offset < 0 or ts_file + offset > 7:
+                    continue
+                if self.tiles[start_rank, ts_file + offset] == "P" + colour:
+                    poss_moves.append(
+                        f"P{atb(start_rank, ts_file + offset)}x"
+                        + self.epsq
+                    )
         # 3. Everything else
         for row in range(8):
             for col in range(8):
@@ -273,7 +275,7 @@ class Board():
         return poss_moves
 
     def update_castle_list(self):
-        """ After move, check that castling hasn't been rules impossible """
+        """ After move, check that castling hasn't been ruled impossible """
         removals = []
         # Check king moves
         if self.tiles[0, 4] != "KW":
@@ -292,14 +294,28 @@ class Board():
         for removal in set(removals) & set(self.castle_list):
             self.castle_list.remove(removal)
 
+    def update_epsq(self, proposed_move):
+        self.epsq = "none"
+        if (
+            (proposed_move[0] == "P")
+            and ("x" not in proposed_move)
+            and (abs(int(proposed_move[2]) - int(proposed_move[4])) == 2)
+        ):
+            self.epsq = (
+                proposed_move[1]
+                + str((int(proposed_move[2]) + int(proposed_move[4])) // 2)
+            )
 
-    def send_info_to_player(self, player, poss_moves, imp_moves):
-        player.receive_info(self, poss_moves, imp_moves)
+    def send_info_to_player(
+        self, player, poss_moves, imp_moves, new_board=True
+    ):
+        player.receive_info(self, poss_moves, imp_moves, new_board=new_board)
 
     def get_move_from_player(self, player):
         return player.send_move()
 
     def process_move(self, proposed_move, colour=None):
+        """ process ACCEPTED moves, no flipping mech in here """
         if colour == None:
             colour = self.current_player
         # If castling
@@ -331,23 +347,28 @@ class Board():
             if proposed_move[-2] == "=":
                 self.tiles[targ_row][targ_col] = proposed_move[-1] + colour
         # Final updates to internal state
-        self.last_move = proposed_move
         self.update_castle_list()
+        self.update_epsq(proposed_move)
         self.current_player = other_player[colour]
         if "KW" not in self.tiles.flatten():
             self.outcome = "B wins"
         if "KB" not in self.tiles.flatten():
             self.outcome = "W wins"
+        return self
 
     def run_move(self):
+        """ method for playing game directly through board object """
         poss_moves = self.get_all_possible_moves(self.current_player)
         imp_moves = []
+        new_board = True
         while True:
             self.send_info_to_player(
                 self.players[self.current_player],
                 poss_moves,
-                imp_moves
+                imp_moves,
+                new_board=new_board
             )
+            new_board = False
             proposed_move = self.get_move_from_player(
                 self.players[self.current_player]
             )
@@ -373,9 +394,47 @@ class Board():
         while True:
             self.run_move()
             self.display_tiles()
+            # Comment out following if-block to have play continue post-end
+            # (useful for training NN how important a king is)
+            # Note this still terminates, once it hits enough moves
             if f"K{self.current_player}" not in self.tiles.flatten():
                 print(f"King taken! {self.current_player} loses!")
                 self.outcome = f"{self.current_player} wins"
                 return
-            elif len(self.outcome) > 0:
+            if len(self.outcome) > 0:
                 return
+
+    def export(self):
+        """
+        Send to board notation, with intent of training nnet
+        Format:
+            first 64 entries: the pieces on the board
+                1, 2, 3, 4, 5, 6 are pawn, knight, bishop, rook, queen, king
+                +- for white/black respectively
+                0 for empty square
+                goes a1, ..., h1, a2, ... h2, a8, ..., h8
+            next four entries: bools O-O (w), O-O-O (w), O-O (b), O-O-O (b)
+            next entry: en passant target square
+                takes number 0 to 63, corresponding to first 64 entries
+                if no en passant target square, it's a -1
+            final: 0 if white to move, 1 if black to move
+        """
+        # encoder = {
+        #     "KW": 6, "QW": 5, "RW": 4, "BW": 3, "NW": 2, "PW": 1,
+        #     "KB": -6, "QB": -5, "RB": -4, "BB": -3, "NB": -2, "PB": -1,
+        #     "": 0
+        # }
+        encoder = { # Fixed for cpp bot
+            "KW": 3000, "QW": 900, "RW": 500,
+            "BW": 300, "NW": 299, "PW": 100,
+            "KB": -3000, "QB": -900, "RB": -500,
+            "BB": -300, "NB": -299, "PB": -100,
+            "": 0
+        }
+        first = list(np.vectorize(encoder.__getitem__)(self.tiles.flatten()))
+        second = [int(i in self.castle_list) for i in ["WK", "WQ", "BK", "BQ"]]
+        third = [-1] if self.epsq == "none" else (
+            [8 * bta(self.epsq)[0] + bta(self.epsq)[1]]
+        )
+        fourth = [int(self.current_player == "B")]
+        return first + second + third + fourth

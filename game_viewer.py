@@ -36,7 +36,7 @@ def main():
     running = True
 
     load_images()
-    filename = "tapes/2025-06-27 20-54-44.csv"
+    filename = "tapes/2025-09-02 19-02-27.csv"
     load_board_list(filename)
     index = 0
     side = "W"
@@ -45,7 +45,7 @@ def main():
         shortened_tape = TAPE_DF[TAPE_DF["past"] < index]
         tape = shortened_tape.drop("past", axis=1).values.tolist()
         draw_game_state(
-            screen, BOARD_LIST[index], tape, colour=side, tape_height=8
+            screen, BOARD_LIST[index], tape, colour=side, th=8
         )
         waiting = True
         while waiting:

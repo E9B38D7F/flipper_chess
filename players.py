@@ -1,21 +1,222 @@
 import numpy as np
 import time
+import random
 from evals import (
     generate_complex_eval_dict,
     get_board_score_with_position,
     get_board_score_with_mobility
 )
+import pandas as pd
+import torch
 
+
+import my_module
 
 
 class Player:
     def __init__(self, colour):
         self.colour = colour
-    def receive_info(self, board, possible_moves, imp_moves):
+    def receive_info(self, board, possible_moves, imp_moves, new_board=True):
         return
     def send_move(self):
         return
 
+
+
+class BozoBot(Player):
+    # Randomly chooses a move
+
+    def __init__(self, colour):
+        super().__init__(colour)
+        self.possible_moves = []
+
+    def receive_info(self, board, possible_moves, imp_moves, new_board=True):
+        self.possible_moves = possible_moves
+        # Below is (deprecated) module used for bug testing the cpp unit
+        # if new_board:
+        #     # This is running checks that cpp is fine
+        #     # 1. Get module outputs for poss board states
+        #     cpp_df = pd.DataFrame(
+        #         my_module.get_outcomes(board.export())
+        #     ).sort_values(by=[i for i in range(70)]).reset_index(drop=True)
+        #     # 2. Get outputs from board
+        #     py_df = pd.DataFrame([
+        #         board.copy().process_move(move, colour=self.colour).export()
+        #         for move in possible_moves
+        #     ]).sort_values(by=[i for i in range(70)]).reset_index(drop=True)
+        #     # 3. Compare
+        #     outcome = abs(cpp_df - py_df).sum().sum()
+        #     if outcome != 0:
+        #         cpp_df.to_csv("../cpp_df.csv", index=False)
+        #         py_df.to_csv("../py_df.csv", index=False)
+        #         print([int(i) for i in board.export()])
+        #         assert False
+        #     print("outcome 0")
+
+
+    def send_move(self):
+        return random.choice(self.possible_moves)
+
+
+class CppBot(Player):
+    # Uses the cpp tree search algo
+    def __init__(self, colour, thinking_time, max_tree_size):
+        super().__init__(colour)
+        self.poss_moves = []
+        self.preferences = None
+        self.thinking_time = thinking_time
+        self.max_tree_size = max_tree_size
+
+    def receive_info(self, board, poss_moves, imp_moves, new_board=True):
+        self.poss_moves = poss_moves
+        if new_board:
+            rs = my_module.think(
+                board.export(),
+                self.thinking_time,
+                self.max_tree_size
+            )
+            board_map = dict(zip([str(r[0]) for r in rs], [r[1] for r in rs]))
+            move_map = {
+                move: str([
+                    int(i) # To make "np.int(3)" appear as "3"
+                    for i in board.copy().process_move(
+                        move, colour=self.colour
+                    ).export()
+                ])
+                for move in self.poss_moves
+            }
+            prefs = {move: board_map[move_map[move]] for move in poss_moves}
+            self.preferences = pd.Series(prefs) / 100
+        self.preferences = self.preferences.loc[poss_moves].sort_values(
+            ascending=self.colour == "B"
+        )
+        print(self.preferences)
+
+    def send_move(self):
+        top_move = self.preferences.index[0]
+        self.preferences = self.preferences.iloc[1:]
+        return top_move
+
+
+class DeepBot(Player):
+    # Template for general neural net play
+    # They differ in their think() methods, so leave that empty
+
+    def __init__(self, colour, model_filepath):
+        super().__init__(colour)
+        self.model = torch.load(model_filepath, weights_only=False)
+        self.model.eval()
+        self.possible_moves = []
+        self.sorted_moves = []
+        self.board = None
+
+    def receive_info(self, board, possible_moves, imp_moves, new_board=True):
+        self.board = board
+        self.possible_moves = possible_moves
+        if new_board:
+            self.think()
+
+    def send_move(self):
+        top_pref = self.sorted_moves[0]
+        self.sorted_moves = self.sorted_moves[1:]
+        return top_pref
+
+    def think(self):
+        return None
+
+
+class AutoDeep(DeepBot):
+    # Uses a pre-trained neural net to do the thinking
+    # Doesn't explore any paths, just evals board which results from each move
+    def think(self):
+        temp_tens = torch.tensor(
+            [
+                self.board.copy().process_move(
+                    move, colour=self.colour
+                ).export()
+                for move in self.possible_moves
+            ],
+            dtype=torch.float32
+        ) # next line is to delete en passant data...
+        board_tensor = torch.cat([temp_tens[:, :68], temp_tens[:, 69:]], dim=1)
+        predictions = self.model(board_tensor).cpu().detach().numpy()[:,0]
+        order = -1 if self.colour == "W" else 1
+        sorted_indices = np.argsort(predictions)[::order]
+        self.sorted_moves = [self.possible_moves[i] for i in sorted_indices]
+
+
+class FlatBot(DeepBot):
+    # Also a pre-trained neural net
+    # But this is one that has a one-hot encoding of board structure
+    # So hopefully plays better
+    def think(self):
+        def get_big_tensor(array):
+            """
+            Transforms each row into a 13x8x8 tensor
+            13 correspond to empty, wpawn, ..., wking, bpawn, ..., bking
+            then the 8x8 is the board
+            all these together are returned as a (len_df)x13x8x8 tensor
+            (copypasted from model training notebook)
+            """
+            np_output = np.zeros((len(array), 13, 8, 8), dtype=np.bool_)
+            for piece_val, board_num in zip(
+                [0, 1, 2, 3, 4, 5, 6, -1, -2, -3, -4, -5, -6], range(13)
+            ):
+                mask = (array == piece_val)
+                np_output[:, board_num, :, :] = mask.reshape(len(array), 8, 8)
+            return torch.from_numpy(np_output)
+        temp_array = np.array([
+            self.board.copy().process_move(move, colour=self.colour).export()
+            for move in self.possible_moves
+        ])
+        board_tensor = get_big_tensor(temp_array[:, :64]).flatten(-3).float()
+        with torch.no_grad():
+            predictions = self.model(board_tensor).cpu().detach().numpy()[:,0]
+        order = -1 if self.colour == "W" else 1
+        sorted_indices = np.argsort(predictions)[::order]
+        self.sorted_moves = [self.possible_moves[i] for i in sorted_indices]
+
+
+
+class OneLayer(Player):
+    # Structure is basically a copypaste of AutoDeep
+    # But instead of a neural net, it just adds up material on the board
+    # Does the move that takes the most material
+    # Not the smartest, but might beat the neural net
+
+    def __init__(self, colour):
+        super().__init__(colour)
+        self.possible_moves = []
+        self.sorted_moves = []
+        self.board = None
+
+    def receive_info(self, board, possible_moves, imp_moves, new_board=True):
+        self.board = board
+        self.possible_moves = possible_moves
+
+    def send_move(self):
+        self.think() # ehh double up for now, who cares
+        top_pref = self.sorted_moves[0]
+        self.sorted_moves = self.sorted_moves[1:]
+        return top_pref
+
+    def think(self):
+        points_dict = {
+            "KW": 30, "QW": 9, "RW": 5, "BW": 3, "NW": 3, "PW": 1,
+            "KB": -30, "QB": -9, "RB": -5, "BB": -3, "NB": -3, "PB": -1,
+            "": 0
+        }
+        predictions = np.array([
+            np.vectorize(
+                points_dict.__getitem__
+            )(
+                self.board.copy().process_move(move, colour=self.colour).tiles
+            ).sum().sum()
+            for move in self.possible_moves
+        ])
+        order = -1 if self.colour == "W" else 1
+        sorted_indices = np.argsort(predictions)[::order]
+        self.sorted_moves = [self.possible_moves[i] for i in sorted_indices]
 
 
 class HumanPlayer(Player):
@@ -48,7 +249,7 @@ class TargetedTree(Player):
         self.thinking_tree_root = None
         self.board = None
 
-    def receive_info(self, board, poss_moves, imp_moves):
+    def receive_info(self, board, poss_moves, imp_moves, new_board=True):
         if self.board is not None:
             if not np.all(board.tiles == self.board.tiles): # i.e., new board
                 self.thinking_tree_root = None
